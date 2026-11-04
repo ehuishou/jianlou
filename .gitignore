@@ -1,0 +1,12 @@
+/.tools/
+/build/
+/.gradle/
+/local.properties
+**/build/
+*.jks
+*.keystore
+
+# Local download metadata and one-off patch artifacts.
+/tools/android-repository.xml
+/tools/*.patch
+/tools/apply-patch.cjs
