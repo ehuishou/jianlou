@@ -37,7 +37,10 @@ if(-not (Test-Path -LiteralPath $key)) {
  & (Join-Path $javaBin 'keytool.exe') -genkeypair -keystore $key -storepass android -keypass android -alias androiddebugkey -dname 'CN=Android Debug,O=Offline Editor,C=US' -keyalg RSA -keysize 2048 -validity 10000
  Check 'Debug key generation'
 }
-$output=Join-Path $root 'build/jianlou-dev.apk'
+$manifestDoc=[xml](Get-Content -Raw -Encoding UTF8 (Join-Path $root 'app/src/main/AndroidManifest.xml'))
+$versionName=$manifestDoc.manifest.GetAttribute('versionName','http://schemas.android.com/apk/res/android')
+if($versionName -notmatch '^[A-Za-z0-9._-]+$') { throw 'Invalid APK version name' }
+$output=Join-Path $root ('build/jianlou-'+$versionName+'.apk')
 & (Join-Path $bt 'apksigner.bat') sign --ks $key --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out $output $aligned
 Check 'APK signing'
 & (Join-Path $bt 'apksigner.bat') verify --verbose $output
