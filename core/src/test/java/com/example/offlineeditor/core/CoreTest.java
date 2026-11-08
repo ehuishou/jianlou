@@ -66,7 +66,53 @@ public final class CoreTest {
         Clip tiny=source.edit(0,50_000,SpeedMap.constant(1),false,Transform.identity());
         near(EditOperations.trim(Project.empty("短片段").append(tiny),0,true,1_000_000).visuals.get(0).durationUs(),50_000,0);
     }
+    static void exportSettings() {
+        ExportSettings settings=new ExportSettings(ExportSettings.Format.MP4,720,30,192);
+        int[] dimensions=settings.dimensions(1920,1080);
+        yes(dimensions[0]==1280 && dimensions[1]==720);
+        yes(settings.frameCount(1_000_000)==30);
+        yes(settings.frameTimeUs(15)==500_000);
+        yes(settings.videoBitrate(1280,720)>0);
+        yes("mp4".equals(settings.extension()));
+        yes("video/mp4".equals(settings.mime()));
+        ExportSettings mp3=new ExportSettings(ExportSettings.Format.MP3,480,24,320);
+        yes("mp3".equals(mp3.extension()));
+        yes("audio/mpeg".equals(mp3.mime()));
+        rejects(()->new ExportSettings(ExportSettings.Format.MP4,500,30,192));
+        rejects(()->new ExportSettings(ExportSettings.Format.MP4,720,29,192));
+        rejects(()->new ExportSettings(ExportSettings.Format.MP4,720,30,256));
+    }
+    static int pcm16(byte[] pcm,int offset) { return (short)((pcm[offset]&255)|(pcm[offset+1]<<8)); }
+    static void audioMix() throws Exception {
+        Clip audio=Clip.create("tone.wav","tone",Clip.Kind.AUDIO,2_000_000);
+        byte[] pcm=new byte[16];
+        AudioMix mix=new AudioMix(); yes(mix.isEmpty());
+        mix.add(audio,1_000_000,(us,ch)->ch==0?.75:-.75); yes(!mix.isEmpty());
+        yes(mix.read(0,1,44100*4,pcm)==1); near(pcm16(pcm,0),0,0);
+        mix.read(44100,1,44100*4,pcm); near(pcm16(pcm,0),24575,0); near(pcm16(pcm,2),-24575,0);
+        mix.add(audio,1_000_000,(us,ch)->ch==0?.75:-.75);
+        mix.read(44100,1,44100*4,pcm); near(pcm16(pcm,0),32767,0); near(pcm16(pcm,2),-32767,0);
+        mix.read(44100*3,1,44100*4,pcm); near(pcm16(pcm,0),0,0);
+        yes(mix.read(9,4,10,pcm)==1); yes(mix.read(10,4,10,pcm)==0);
+        near(AudioMix.sampleCount(1_000_001),44101,0);
+        for(boolean reverse:new boolean[]{false,true}) {
+            AudioMix mapped=new AudioMix();
+            mapped.add(audio.edit(500_000,1_500_000,SpeedMap.constant(2),reverse,Transform.identity()),0,(us,ch)->us/2_000_000.0);
+            mapped.read(4410,1,22050,pcm);
+            near(pcm16(pcm,0),Math.round((reverse?.65:.35)*32767),1);
+            mapped.read(22050,1,44100,pcm); near(pcm16(pcm,0),0,0);
+        }
+        int[] portrait=new ExportSettings(ExportSettings.Format.MP4,1080,60,192).dimensions(1080,1920);
+        yes(portrait[0]==1080 && portrait[1]==1920);
+        for(int fps:new int[]{24,25,30,60}) {
+            ExportSettings s=new ExportSettings(ExportSettings.Format.MP4,480,fps,128);
+            near(s.frameCount(1_000_001),fps+1,0);
+            near(s.frameTimeUs(fps),1_000_000,0);
+        }
+    }
     public static void main(String[] args) throws Exception {
+        audioMix();
+        exportSettings();
         SpeedMap normal=SpeedMap.constant(2);
         near(normal.durationUs(10_000_000),5_000_000,0);
         near(normal.sourceFraction(1_000_000,10_000_000,false),0.2,1e-9);

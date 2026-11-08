@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference='Stop'
+$ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $root=Split-Path $PSScriptRoot -Parent
@@ -11,19 +11,25 @@ $build=Join-Path $root ('build/direct/'+[Guid]::NewGuid().ToString('N'))
 $classes=Join-Path $build 'classes'
 $dex=Join-Path $build 'dex'
 $generated=Join-Path $build 'generated'
+& (Join-Path $PSScriptRoot 'setup-export-deps.ps1') -Offline
+$mp3=Join-Path $root '.tools/export-deps/jump3r-android.jar'
+$assets=Join-Path $build 'assets'
+New-Item -ItemType Directory -Force -Path $assets | Out-Null
+Copy-Item -LiteralPath (Join-Path $root '.tools/export-deps/jump3r-1.0.5-sources.jar') -Destination $assets
+Copy-Item -Path (Join-Path $root 'app/src/main/assets/*') -Destination $assets
 New-Item -ItemType Directory -Force -Path $classes,$dex,$generated | Out-Null
 function Check($step) { if($LASTEXITCODE -ne 0) { throw ($step+' failed: '+$LASTEXITCODE) } }
 & (Join-Path $bt 'aapt2.exe') compile --dir (Join-Path $root 'app/src/main/res') -o (Join-Path $build 'resources.zip')
 Check 'Resource compilation'
-& (Join-Path $bt 'aapt2.exe') link -o (Join-Path $build 'unsigned.apk') --manifest (Join-Path $root 'app/src/main/AndroidManifest.xml') -I $android --java $generated (Join-Path $build 'resources.zip')
+& (Join-Path $bt 'aapt2.exe') link -o (Join-Path $build 'unsigned.apk') --manifest (Join-Path $root 'app/src/main/AndroidManifest.xml') -I $android --java $generated -A $assets (Join-Path $build 'resources.zip')
 Check 'Resource linking'
 $sources=@(Get-ChildItem -LiteralPath (Join-Path $root 'core/src/main/java'),(Join-Path $root 'app/src/main/java'),$generated -Recurse -Filter '*.java' | ForEach-Object { $_.FullName })
-& javac -source 8 -target 8 -Xlint:-options -encoding UTF-8 -cp $android -d $classes $sources
+& javac -source 8 -target 8 -Xlint:-options -encoding UTF-8 -cp "$android;$mp3" -d $classes $sources
 Check 'Java compilation'
 $jar=Join-Path $build 'classes.jar'
 & (Join-Path $javaBin 'jar.exe') cf $jar -C $classes .
 Check 'Class archive'
-& (Join-Path $bt 'd8.bat') --lib $android --min-api 26 --output $dex $jar
+& (Join-Path $bt 'd8.bat') --lib $android --min-api 26 --output $dex $jar $mp3
 Check 'DEX compilation'
 $unsigned=Join-Path $build 'unsigned.apk'
 Add-Type -AssemblyName System.IO.Compression.FileSystem

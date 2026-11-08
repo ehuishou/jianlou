@@ -1,0 +1,12 @@
+剪漏 MP3 export uses Jump3r 1.0.5, a Java port of LAME.
+Copyright: The L.A.M.E. project, Ken Händel, Vadym Vikulin, Hanns Holger Rutz and contributors.
+License: GNU Lesser General Public License version 2.1 or later.
+Upstream: https://git.iem.at/sciss/jump3r
+Source: https://repo.maven.apache.org/maven2/de/sciss/jump3r/1.0.5/jump3r-1.0.5-sources.jar
+Complete corresponding library sources are included in the APK at assets/jump3r-1.0.5-sources.jar.
+Only desktop frontends are excluded; encoder classes are unmodified.
+Mp3Encoder.java adapts LGPL module wiring and is also LGPL-2.1-or-later.
+Library modification, debugging and reverse engineering for those modifications are permitted.
+Public application source and tools/build-apk.ps1 allow rebuilding/relinking with a modified library;
+replace the checksum-pinned dependency with your locally built version and update its checksum.
+No warranty is provided. See LGPL-2.1.txt for the full license.

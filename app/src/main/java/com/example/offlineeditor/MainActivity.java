@@ -12,6 +12,7 @@ import android.provider.OpenableColumns;
 import android.view.*;
 import android.widget.*;
 import com.example.offlineeditor.core.*;
+import com.example.offlineeditor.export.*;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -33,7 +34,11 @@ public final class MainActivity extends Activity {
     private TimelineView timeline;
     private MediaPlayer player;
     private int selected=-1;
-    private boolean importing,playing;
+    private boolean importing,playing,exporting;
+    private ExportSettings pendingExport;
+    private Project pendingProject;
+    private ExportControl exportControl;
+    private Dialog exportProgress;
     private File draft;
     private long previewGeneration,positionUs,pendingLocalUs,lastTick;
     private Clip loadedClip;
@@ -42,6 +47,10 @@ public final class MainActivity extends Activity {
         getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(SURFACE);
         draft=new File(getFilesDir(),"project.oep");
         if(draft.isFile()) try { project=store.load(draft.toPath()); } catch(IOException e) { toast("草稿读取失败，原文件保留"); }
+        if(state!=null && state.containsKey("exportFormat")) {
+            pendingExport=new ExportSettings(ExportSettings.Format.valueOf(state.getString("exportFormat")),state.getInt("exportResolution"),state.getInt("exportFps"),state.getInt("exportKbps"));
+            pendingProject=project;
+        }
         LinearLayout base=column(); base.setBackgroundColor(BG);
         base.setOnApplyWindowInsetsListener((v,insets)-> { v.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom()); return insets; });
         LinearLayout top=row(); top.setPadding(dp(12),0,dp(12),0);
@@ -277,8 +286,48 @@ public final class MainActivity extends Activity {
         final Dialog[] dialog={null}; sheetAction(box,"知道了",()->dialog[0].dismiss()); dialog[0]=sheet(box);
     }
     private void showExport() {
-        LinearLayout box=panel("成片导出尚未接入","当前支持本地草稿、时间线编辑和基础连续预览。编码、音轨混合、曲线 / 倒放渲染仍在开发，暂时无法生成 MP4。");
-        final Dialog[] dialog={null}; sheetAction(box,"保存当前草稿",()-> { if(save()) { toast("已保存草稿"); dialog[0].dismiss(); } }); dialog[0]=sheet(box);
+        if(exporting) { toast("正在导出，请稍候"); return; }
+        if(importing) { toast("请等待素材导入完成"); return; }
+        if(project.durationUs()<=0) { toast("请先导入素材"); return; }
+        LinearLayout box=panel("导出成片","本地处理 · 无需联网\n按时间线导出裁剪、排序、变速、倒放及画面变换。导出期间请保持此页面打开。");
+        Spinner format=exportChoice(box,"文件格式",new String[]{"MP4 · 视频成片","MP3 · 仅音频"},project.visuals.isEmpty()?1:0);
+        LinearLayout videoOptions=column(); box.addView(videoOptions);
+        Spinner quality=exportChoice(videoOptions,"清晰度（画面短边）",new String[]{"480p · 节省空间","720p · 推荐","1080p · 高清"},1);
+        Spinner fps=exportChoice(videoOptions,"帧率",new String[]{"24 fps","25 fps","30 fps · 推荐","60 fps"},2);
+        LinearLayout audioOptions=column(); box.addView(audioOptions);
+        Spinner bitrate=exportChoice(audioOptions,"MP3 音质",new String[]{"128 kbps","192 kbps · 推荐","320 kbps"},1);
+        TextView description=label("",12,MUTED); description.setPadding(0,dp(8),0,0); box.addView(description);
+        format.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            public void onNothingSelected(AdapterView<?> parent) {}
+            public void onItemSelected(AdapterView<?> parent,View view,int position,long id) {
+                videoOptions.setVisibility(position==0?View.VISIBLE:View.GONE); audioOptions.setVisibility(position==0?View.GONE:View.VISIBLE);
+                description.setText(position==0?"H.264 + AAC · 比例跟随首段素材 · 空白区域为黑色。逐帧渲染可能较慢；设备不支持的参数会明确报错。":"44.1 kHz 双声道 · 混合视频原声与音频轨道。变速会同时改变音调；重叠音轨超出音量上限时限幅。");
+                if(parent.getWindowToken()!=null) parent.requestLayout();
+            }
+        });
+        final Dialog[] dialog={null}; sheetAction(box,"选择保存位置",()-> { try {
+            if(!save()) return;
+            ExportSettings.Format f=format.getSelectedItemPosition()==0?ExportSettings.Format.MP4:ExportSettings.Format.MP3;
+            if(f==ExportSettings.Format.MP4 && project.visuals.isEmpty()) { toast("纯音频项目请选择 MP3"); return; }
+            pendingExport=new ExportSettings(f,new int[]{480,720,1080}[quality.getSelectedItemPosition()],new int[]{24,25,30,60}[fps.getSelectedItemPosition()],new int[]{128,192,320}[bitrate.getSelectedItemPosition()]);
+            pendingProject=project;
+            String filename="剪漏_"+new java.text.SimpleDateFormat("yyyyMMdd_HHmmss",Locale.US).format(new Date())+"."+pendingExport.extension();
+            Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType(pendingExport.mime()).putExtra(Intent.EXTRA_TITLE,filename).addCategory(Intent.CATEGORY_OPENABLE); startActivityForResult(intent,12); dialog[0].dismiss();
+        } catch(Exception e) { toast("导出参数无效："+e.getMessage()); } }); dialog[0]=sheet(box);
+        sheetAction(box,"MP3 开源组件说明",()-> { try {
+            StringBuilder text=new StringBuilder(); try(BufferedReader reader=new BufferedReader(new InputStreamReader(getAssets().open("THIRD_PARTY_NOTICES.txt"),"UTF-8"))) { String line; while((line=reader.readLine())!=null) text.append(line).append('\n'); }
+            new AlertDialog.Builder(this).setTitle("Jump3r / LAME · LGPL").setMessage(text.toString()).setPositiveButton("关闭",null).show();
+        } catch(IOException e) { toast("无法读取许可证说明"); } });
+    }
+    private Spinner exportChoice(LinearLayout box,String title,String[] values,int initial) {
+        TextView caption=label(title,12,MUTED); caption.setPadding(0,dp(10),0,dp(3)); box.addView(caption);
+        Spinner spinner=new Spinner(this); spinner.setBackground(round(0xff343b44,8));
+        ArrayAdapter<String> adapter=new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,values) {
+            private View tint(View v) { if(v instanceof TextView) { ((TextView)v).setTextColor(INK); ((TextView)v).setTextSize(14); v.setPadding(dp(12),dp(10),dp(12),dp(10)); } v.setBackgroundColor(0xff343b44); return v; }
+            @Override public View getView(int position,View recycled,ViewGroup parent) { return tint(super.getView(position,recycled,parent)); }
+            @Override public View getDropDownView(int position,View recycled,ViewGroup parent) { return tint(super.getDropDownView(position,recycled,parent)); }
+        };
+        spinner.setAdapter(adapter); spinner.setSelection(initial); box.addView(spinner,new LinearLayout.LayoutParams(-1,dp(46))); return spinner;
     }
     private void pick(String type) {
         if(importing) { toast("素材正在复制，请稍候"); return; }
@@ -286,7 +335,12 @@ public final class MainActivity extends Activity {
         intent.putExtra(Intent.EXTRA_MIME_TYPES,new String[]{"video/*","image/*","audio/*"}); intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true); startActivityForResult(intent,11);
     }
     @Override protected void onActivityResult(int request,int result,Intent data) {
-        super.onActivityResult(request,result,data); if(request!=11 || result!=RESULT_OK || data==null) return;
+        super.onActivityResult(request,result,data);
+        if(request==12) {
+            if(result==RESULT_OK && data!=null && data.getData()!=null && pendingExport!=null && pendingProject!=null) startExport(data.getData(),pendingExport,pendingProject);
+            pendingExport=null; pendingProject=null; return;
+        }
+        if(request!=11 || result!=RESULT_OK || data==null) return;
         List<Uri> uris=new ArrayList<>(); if(data.getClipData()!=null) { for(int i=0;i<data.getClipData().getItemCount();i++) uris.add(data.getClipData().getItemAt(i).getUri()); } else if(data.getData()!=null) uris.add(data.getData());
         importing=true; render();
         worker.execute(()-> {
@@ -299,6 +353,35 @@ public final class MainActivity extends Activity {
             });
         });
     }
+    private void startExport(Uri destination,ExportSettings settings,Project snapshot) {
+        exporting=true; pause();
+        LinearLayout box=panel("正在导出 "+settings.extension().toUpperCase(Locale.US),"请保持此页面打开。取消或退出后将清理未完成的文件。");
+        TextView progressText=label("准备素材…",14,INK); box.addView(progressText);
+        ProgressBar progress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal); progress.setMax(100); box.addView(progress);
+        final ExportControl control=new ExportControl((stage,percent)->runOnUiThread(()-> { if(!isDestroyed()) { progressText.setText(stage+"  "+percent+"%"); progress.setProgress(percent); } })); exportControl=control;
+        sheetAction(box,"取消导出",()-> { control.cancel(); progressText.setText("正在取消并清理文件…"); });
+        exportProgress=sheet(box); exportProgress.setCancelable(false); exportProgress.setCanceledOnTouchOutside(false); getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        worker.execute(()-> {
+            File staging=new File(getCacheDir(),"export-"+UUID.randomUUID()); boolean success=false; String message;
+            try {
+                File result=Exporter.run(snapshot,settings,staging,control); control.check();
+                try(InputStream in=new FileInputStream(result); OutputStream out=getContentResolver().openOutputStream(destination,"wt")) {
+                    if(out==null) throw new IOException("无法打开保存位置"); byte[] buffer=new byte[128*1024]; int n; long copied=0;
+                    while((n=in.read(buffer))!=-1) { control.check(); out.write(buffer,0,n); copied+=n; control.progress("保存到所选位置",96+(int)(copied*3/result.length())); } out.flush(); control.check();
+                }
+                success=true; message="导出成功 · "+settings.extension().toUpperCase(Locale.US)+"\n已保存到你选择的位置。";
+            } catch(java.util.concurrent.CancellationException e) { message="导出已取消"; }
+              catch(OutOfMemoryError e) { message="内存不足，请降低清晰度或缩短素材后重试"; }
+              catch(Exception e) { message="导出失败："+(e.getMessage()==null?e.getClass().getSimpleName():e.getMessage()); }
+            if(!success) { try { android.provider.DocumentsContract.deleteDocument(getContentResolver(),destination); } catch(Exception ignored) {} }
+            deleteTree(staging); final String outcome=message; final boolean completed=success;
+            runOnUiThread(()-> { exporting=false; exportControl=null; if(isDestroyed()) return; getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); if(exportProgress!=null) { exportProgress.dismiss(); exportProgress=null; } render();
+                AlertDialog.Builder resultDialog=new AlertDialog.Builder(this).setTitle(completed?"导出完成":"导出结束").setMessage(outcome).setPositiveButton("知道了",null);
+                if(completed) resultDialog.setNeutralButton("打开文件",(d,which)-> { try { startActivity(new Intent(Intent.ACTION_VIEW).setDataAndType(destination,settings.mime()).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)); } catch(ActivityNotFoundException e) { toast("未找到可以打开此文件的应用，请在文件管理器查看"); } }); resultDialog.show(); });
+        });
+    }
+
+    private static void deleteTree(File file) { if(file==null || !file.exists()) return; File[] children=file.listFiles(); if(children!=null) for(File child:children) deleteTree(child); file.delete(); }
     private Clip importOne(Uri uri) throws Exception {
         String mime=getContentResolver().getType(uri),name="素材"; Clip.Kind kind;
         if(mime!=null && mime.startsWith("image/")) kind=Clip.Kind.IMAGE; else if(mime!=null && mime.startsWith("audio/")) kind=Clip.Kind.AUDIO; else if(mime!=null && mime.startsWith("video/")) kind=Clip.Kind.VIDEO; else throw new IOException("不支持的素材类型");
@@ -332,5 +415,6 @@ public final class MainActivity extends Activity {
         catch(IOException e) { toast("切换失败："+e.getMessage()); }
     }
     @Override protected void onPause() { super.onPause(); pause(); }
-    @Override protected void onDestroy() { handler.removeCallbacks(ticker); clearPreview(); timeline.close(); worker.shutdown(); super.onDestroy(); }
+    @Override protected void onSaveInstanceState(Bundle state) { super.onSaveInstanceState(state); if(pendingExport!=null) { state.putString("exportFormat",pendingExport.format.name()); state.putInt("exportResolution",pendingExport.resolution); state.putInt("exportFps",pendingExport.fps); state.putInt("exportKbps",pendingExport.audioKbps); } }
+    @Override protected void onDestroy() { if(exportControl!=null) exportControl.cancel(); if(exportProgress!=null) exportProgress.dismiss(); handler.removeCallbacks(ticker); clearPreview(); timeline.close(); worker.shutdown(); super.onDestroy(); }
 }
