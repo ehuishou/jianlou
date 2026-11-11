@@ -1,11 +1,11 @@
 package com.example.offlineeditor.core;
 
-import java.util.Arrays;
-
 /** Source-time speed curve. Integrate dt = ds/v(s); units are microseconds. */
 public final class SpeedMap {
     private final double[] positions;
     private final double[] rates;
+    private final boolean constant;
+    private final double totalIntegral;
     public SpeedMap(double[] positions, double[] rates) {
         if (positions == null || rates == null || positions.length != rates.length || positions.length < 2)
             throw new IllegalArgumentException("At least two matching speed points required");
@@ -18,11 +18,16 @@ public final class SpeedMap {
                 !Double.isFinite(rates[i]) || rates[i] < 0.1 || rates[i] > 16)
                 throw new IllegalArgumentException("Invalid position or speed (0.1..16)");
         }
+        boolean same = true;
+        for (int i = 1; i < this.rates.length; i++) same &= this.rates[i] == this.rates[0];
+        this.constant = same;
+        // Cache the dimensionless integral, valid for every source duration.
+        this.totalIntegral = integral(1);
     }
     public static SpeedMap constant(double rate) { return new SpeedMap(new double[]{0,1}, new double[]{rate,rate}); }
     public double[] positions() { return positions.clone(); }
     public double[] rates() { return rates.clone(); }
-    public boolean isConstant() { for (double r : rates) if (r != rates[0]) return false; return true; }
+    public boolean isConstant() { return constant; }
     public double rateAt(double x) {
         checkUnit(x);
         int i = 0; while (i < positions.length - 2 && x > positions[i + 1]) i++;
@@ -44,15 +49,21 @@ public final class SpeedMap {
     }
     public long durationUs(long sourceDurationUs) {
         if (sourceDurationUs <= 0 || sourceDurationUs > 86_400_000_000L) throw new IllegalArgumentException("Duration must be within 24 hours");
-        return Math.max(1L, Math.round(sourceDurationUs * integral(1)));
+        return Math.max(1L, Math.round(sourceDurationUs * totalIntegral));
     }
     public double sourceFraction(long outputUs, long sourceDurationUs, boolean reverse) {
         long total = durationUs(sourceDurationUs);
         if (outputUs < 0 || outputUs > total) throw new IllegalArgumentException("Seek outside clip");
         if (outputUs == 0) return reverse ? 1 : 0;
         if (outputUs == total) return reverse ? 0 : 1;
+        // Constant speed has a direct inverse: source = output * rate.
+        // Keep rounded-duration endpoints above and half-open Clip bounds unchanged.
+        if (constant) {
+            double fraction = outputUs / (double) sourceDurationUs * rates[0];
+            return Math.max(0, Math.min(1, reverse ? 1 - fraction : fraction));
+        }
         double target = outputUs / (double) sourceDurationUs;
-        if (reverse) target = integral(1) - target;
+        if (reverse) target = totalIntegral - target;
         double lo = 0, hi = 1;
         for (int i = 0; i < 55; i++) {
             double mid = (lo + hi) / 2;

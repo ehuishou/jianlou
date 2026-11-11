@@ -110,7 +110,52 @@ public final class CoreTest {
             near(s.frameTimeUs(fps),1_000_000,0);
         }
     }
+    private static void constantSpeedRegression() {
+        for (double rate : new double[]{.1,.25,.5,1,1.25,2,3,16}) {
+            SpeedMap map=SpeedMap.constant(rate);
+            SpeedMap multi=new SpeedMap(new double[]{0,.25,.6,1},new double[]{rate,rate,rate,rate});
+            yes(map.isConstant()); yes(multi.isConstant());
+            for (long source : new long[]{1,2,3,17,1_000_001,86_400_000_000L}) {
+                long total=map.durationUs(source);
+                near(total,Math.max(1,Math.round(source*(1/rate))),0);
+                // Segment summation may differ by floating-point rounding only.
+                near(multi.durationUs(source),total,1);
+                for (boolean reverse : new boolean[]{false,true}) {
+                    for (long at : new long[]{0,total/2,Math.max(0,total-1),total}) {
+                        double expected=at==0?0:at==total?1:at*rate/source;
+                        if(reverse) expected=1-expected;
+                        double actual=map.sourceFraction(at,source,reverse);
+                        yes(Double.isFinite(actual) && actual>=0 && actual<=1);
+                        near(actual,expected,1e-12);
+                        if(at>0 && at<Math.min(total,multi.durationUs(source)))
+                            near(multi.sourceFraction(at,source,reverse),expected,1e-12);
+                    }
+                    rejects(()->map.sourceFraction(-1,source,reverse));
+                    rejects(()->map.sourceFraction(total+1,source,reverse));
+                }
+            }
+            for (boolean reverse : new boolean[]{false,true}) {
+                Clip c=Clip.create("test","test",Clip.Kind.AUDIO,10_000_000)
+                    .edit(2_000_000,8_000_000,map,reverse,Transform.identity());
+                near(c.sourceUs(0),reverse?7_999_999:2_000_000,0);
+                near(c.sourceUs(c.durationUs()),reverse?2_000_000:7_999_999,0);
+                long at=c.durationUs()/3;
+                double offset=reverse?6_000_000-at*rate:at*rate;
+                near(c.sourceUs(at),2_000_000+Math.round(offset),1);
+            }
+            rejects(()->map.durationUs(0));
+            rejects(()->map.durationUs(86_400_000_001L));
+            rejects(()->map.sourceFraction(0,0,false));
+        }
+        double[] positions={0,.3,1}, rates={1,1,1};
+        SpeedMap immutable=new SpeedMap(positions,rates);
+        positions[1]=.9; rates[1]=16; immutable.rates()[0]=2;
+        yes(immutable.isConstant()); near(immutable.durationUs(100),100,0);
+        near(immutable.sourceFraction(25,100,false),.25,0);
+        yes(!new SpeedMap(new double[]{0,.5,1},new double[]{1,2,1}).isConstant());
+    }
     public static void main(String[] args) throws Exception {
+        constantSpeedRegression();
         audioMix();
         exportSettings();
         SpeedMap normal=SpeedMap.constant(2);
